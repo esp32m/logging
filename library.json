@@ -12,7 +12,11 @@
     "type": "git",
     "url": "https://github.com/esp32m/logging.git"
   },
+<<<<<<< HEAD
   "version": "1.0.1",
+=======
+  "version": "1.0.0",
+>>>>>>> b7ec68aff7af0e2f9b294de107f9a3aa22447d71
   "license": "LGPL-3.0",
   "frameworks": "arduino",
   "platforms": ["espressif32"]
