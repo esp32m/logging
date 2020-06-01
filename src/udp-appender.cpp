@@ -11,7 +11,23 @@ namespace esp32m
         memset(&_addr, 0, sizeof(_addr));
         _addr.sin_family = AF_INET;
         _addr.sin_port = htons(port);
-        inet_aton(ipaddr, &_addr.sin_addr.s_addr);
+        if (ipaddr)
+            inet_aton(ipaddr, &_addr.sin_addr.s_addr);
+        _format = port == 514 ? Format::Syslog : Format::Text;
+        if (_addr.sin_addr.s_addr == 0)
+            WiFi.onEvent([this](system_event_id_t event, system_event_info_t info) {
+                switch (event)
+                {
+                case SYSTEM_EVENT_STA_GOT_IP:
+                    _addr.sin_addr.s_addr = WiFi.gatewayIP();
+                    break;
+                case SYSTEM_EVENT_STA_LOST_IP:
+                    _addr.sin_addr.s_addr = 0;
+                    break;
+                default:
+                    break;
+                }
+            });
     }
 
     UDPAppender::~UDPAppender()
@@ -24,10 +40,14 @@ namespace esp32m
         }
     }
 
-    bool UDPAppender::append(const char *message)
+    const uint8_t SyslogSeverity[] = {5, 5, 3, 4, 6, 7, 7};
+
+    bool UDPAppender::append(const LogMessage *message)
     {
-        if (!WiFi.isConnected())
+        if (!WiFi.isConnected() || !_addr.sin_addr.s_addr)
             return false;
+        if (!message)
+            return true;
         static char eol = '\n';
         if (_fd < 0)
         {
@@ -38,16 +58,55 @@ namespace esp32m
             else
                 return false;
         }
-        auto len = strlen(message);
-        while (len)
+        switch (_format)
         {
-            auto result = sendto(_fd, message, len, 0, (struct sockaddr *)&_addr, sizeof(_addr));
-            if (result < 0)
-                return false;
-            len -= result;
-            message += result;
+        case Format::Text:
+        {
+            auto formatter = Logging::formatter();
+            auto msg = formatter(message);
+            if (!msg)
+                return true;
+            auto len = strlen(msg);
+            while (len)
+            {
+                auto result = sendto(_fd, msg, len, 0, (struct sockaddr *)&_addr, sizeof(_addr));
+                if (result < 0)
+                {
+                    free(msg);
+                    return false;
+                }
+                len -= result;
+                msg += result;
+            }
+            free(msg);
+            return sendto(_fd, &eol, sizeof(eol), 0, (struct sockaddr *)&_addr, sizeof(_addr)) == sizeof(eol);
         }
-        return sendto(_fd, &eol, sizeof(eol), 0, (struct sockaddr *)&_addr, sizeof(_addr)) == sizeof(eol);
+        case Format::Syslog:
+            // https://tools.ietf.org/html/rfc5424
+            int pri = 3 /*system daemons*/ * 8 + SyslogSeverity[message->level()];
+            char strftime_buf[4 /* YEAR */ + 1 /* - */ + 2 /* MONTH */ + 1 /* - */ + 2 /* DAY */ + 1 /* T */ + 2 /* HOUR */ + 1 /* : */ + 2 /* MINUTE */ + 1 /* : */ + 2 /* SECOND */ + 1 /*NULL*/];
+            auto stamp = message->stamp();
+            struct tm timeinfo;
+            auto neg = stamp < 0;
+            if (neg)
+                stamp = -stamp;
+            time_t now = stamp / 1000;
+            gmtime_r(&now, &timeinfo);
+            if (!neg)
+                timeinfo.tm_year = 0;
+            strftime(strftime_buf, sizeof(strftime_buf), "%FT%T", &timeinfo);
+            const char *hostname = WiFi.getHostname();
+            const char *name = message->name();
+            auto ms = 1 /* < */ + 3 /* PRIVAL */ + 1 /* > */ + 1 /* version */ + 1 /* SP */ + strlen(strftime_buf) + 1 /* . */ + 4 /* MS */ + 1 /* Z */ + 1 /* SP */ + strlen(hostname) + 1 /* SP */ + strlen(name) + 1 /* SP */ + 1 + /* PROCID */ +1 /*SP*/ + 1 + /* MSGID */ +1 /* SP */ + 1 + /* STRUCTURED-DATA */ +1 /* SP */ + message->message_size() + 1 /*NULL*/;
+            char *buf = (char *)malloc(ms);
+            if (!buf)
+                return true;
+            sprintf(buf, "<%d>1 %s.%04dZ %s %s - - - %s", pri, strftime_buf, (int)(stamp % 1000), hostname, name, message->message());
+            auto result = sendto(_fd, buf, strlen(buf), 0, (struct sockaddr *)&_addr, sizeof(_addr));
+            free(buf);
+            return (result >= 0);
+        }
+        return true;
     }
 
 } // namespace esp32m

@@ -7,7 +7,7 @@
 namespace esp32m
 {
 
-  class MQTTAppender : public LogAppender
+  class MQTTAppender : public FormattingAppender
   {
   public:
     MQTTAppender(const MQTTAppender &) = delete;

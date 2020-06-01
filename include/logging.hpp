@@ -77,6 +77,49 @@ namespace esp32m
   };
 
   /**
+   * @brief Information about the log message
+   */
+  struct __attribute__((packed)) LogMessage
+  {
+  public:
+    LogMessage(const LogMessage &) = delete;
+    /**
+     * @return Size of this struct in bytes
+     */
+    const size_t size() const { return _size; }
+    /**
+     * @return The message itself
+     */
+    const char *message() const { return ((char *)this) + sizeof(LogMessage); }
+    /**
+     * @return Size of the message including null terminator
+     */
+    const size_t message_size() const { return _size - sizeof(LogMessage); }
+    /**
+     * @return Name of the logger emitted the message
+     */
+    const char *name() const { return _name; }
+    /**
+     * @return Level of this message
+     */
+    const LogLevel level() const { return (LogLevel)_level; }
+    /**
+     * @return Time stamp of the message. If positive, this is the number of millis since the last boot (means the system time was not set). 
+     *         If negative, this is the current date/time in millis (NOT IN SECONDS!) since 1970-1-1 00:00
+     */
+    const int64_t stamp() const { return _stamp; }
+
+  private:
+    size_t _size;
+    int64_t _stamp;
+    const char *_name;
+    uint8_t _level;
+    LogMessage(size_t size, LogLevel level, int64_t stamp, const char *name, const char *message, size_t messageLen);
+    static LogMessage *alloc(LogLevel level, int64_t stamp, const char *name, const char *message);
+    friend class Logger;
+  };
+
+  /**
    * @brief Logger implementation
    * Every loggable object creates and owns an instance of this class on demand
    * All public methods of this class are thread-safe
@@ -124,6 +167,11 @@ namespace esp32m
   };
 
   /**
+   * @brief Function that transforms log message struct to readable string
+   */
+  typedef char *(*LogMessageFormatter)(const LogMessage *);
+
+  /**
    * @brief Base abstract class for log appenders
    * Log messages may be sent to multiple appenders (e.g. UART, filesystem, network etc.)
    */
@@ -141,7 +189,7 @@ namespace esp32m
      * @param message Message to be recorded, may be @c nullptr
      * @return @c true on success, @c false on failure
      */
-    virtual bool append(const char *message) = 0;
+    virtual bool append(const LogMessage *message) = 0;
 
   private:
     LogAppender *_prev = nullptr;
@@ -152,6 +200,32 @@ namespace esp32m
     friend class LogQueue;
   };
 
+  /**
+   * @brief Base abstract class for appenders that want to receive pre-formatted messages instaed of @c LogMessage struct
+   */
+  class FormattingAppender : public LogAppender
+  {
+  public:
+    /**
+   * @brief Construct new appender with the specified formatter
+   * @param formatter Formatter function or @c nullptr to use default formatter
+   */
+    FormattingAppender(LogMessageFormatter formatter = nullptr);
+
+    /**
+     * @brief This is overriden to format the message
+     */
+    virtual bool append(const LogMessage *message);
+
+    /**
+     * @brief This must be overriden in the descendants to recod the formatted message
+     */
+    virtual bool append(const char *message) = 0;
+
+  private:
+    LogMessageFormatter _formatter;
+  };
+
   class Logging
   {
   public:
@@ -159,12 +233,14 @@ namespace esp32m
      * @brief This is the default logger to be used when @c Loggable instacne is not available
      */
     static Logger &system();
+    
     /**
      * @brief Adds appender to the logging subsystem.
      * All log messages passing the level check will be sent to this appender
      * @param a Appender to be added
      */
     static void addAppender(LogAppender *a);
+    
     /**
      * @brief Adds appender that may need some time to initialize before it can record messages (for example, connect to the network, mount filesystem etc.) 
      * If added with @c Logging::addAppender(), such appender will miss log messages sent before it is ready.
@@ -177,20 +253,35 @@ namespace esp32m
      *                    In this case, the buffer memory will never be released.
      */
     static void addBufferedAppender(LogAppender *a, int bufsiza = 1024, bool autoRelease = true);
+    
     /**
      * @brief Removes appender from the logging subsystem.
      * Log messages will no longer be sent to this appender
      * @param a Appender to be removed
      */
     static void removeAppender(LogAppender *a);
+
     /**
      * @brief Global log level, used in conjunction with the specific @c Logger's level to calculate effective log level.
-     */  
+     */
     static const LogLevel level() { return _level; }
+
+    /**
+     * @brief Global formatter function that transforms @c LogMessage to a string
+     */
+    static LogMessageFormatter formatter();
+
+    /**
+     * @brief Set global formatter function 
+     * @param formatter Formatter function or @c nullptr to use the default formatter
+     */
+    static void setFormatter(LogMessageFormatter formatter) { _formatter = formatter; }
+
     /**
      * @brief Set global log level
-     */  
+     */
     static void setLevel(LogLevel level) { _level = level; }
+
     /**
      * @brief Defines how the messages are being forwarded to appenders.
      * By default (when this method is not called, or called with @p size = 0), @c Logger::log(...) immediately forwards the message to all registered appenders. 
@@ -201,19 +292,21 @@ namespace esp32m
      * @param size Size of the queue. If set to 0, the queue will be removed.
      */
     static void useQueue(int size = 1024);
+
     /**
      * @brief Hooks ESP32-specific logging mechanism, see @c esp_log_set_vprintf() in the esp-idf docs for details
      * @param install Install or remove the hook to interecept log messages
-     */ 
+     */
     static void hookEsp32Logger(bool install = true);
 
     /**
      * @brief Intercepts log messages written to UART via log_X and similar.
      * @param bufsize Size of line buffer. Set to 0 to remove UART hook
-     */ 
+     */
     static void hookUartLogger(int bufsize = 128);
 
   private:
+    static LogMessageFormatter _formatter;
     static LogLevel _level;
   };
 

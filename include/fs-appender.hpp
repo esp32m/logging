@@ -10,7 +10,7 @@ namespace esp32m
     /**
      * Sends output file system (SD, SPIFFS or other)
      */
-    class FSAppender : public LogAppender
+    class FSAppender : public FormattingAppender
     {
     public:
         FSAppender(FS &fs, const char *name, uint8_t maxFiles = 1) : _fs(fs), _name(name), _maxFiles(maxFiles), _lock(xSemaphoreCreateRecursiveMutex()) {}

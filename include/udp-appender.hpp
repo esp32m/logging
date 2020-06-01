@@ -10,14 +10,23 @@ namespace esp32m
     class UDPAppender : public LogAppender
     {
     public:
-        UDPAppender(const char *ipaddr, uint16_t port);
+        enum Format
+        {
+            Text,
+            Syslog
+        };
+        UDPAppender(const char *ipaddr=nullptr, uint16_t port = 514);
         UDPAppender(const UDPAppender &) = delete;
         ~UDPAppender();
+        Format format() { return _format; }
+        void setMode(Format format) { _format = format; }
 
     protected:
-        virtual bool append(const char *message);
+        virtual bool append(const LogMessage *message);
 
     private:
+        Format _format;
+
         struct sockaddr_in _addr;
         int _fd;
     };

@@ -8,7 +8,7 @@ namespace esp32m
   /**
    * Sends output to default UART logger using ets_write_char_uart(...)
    */ 
-  class ETSAppender : public LogAppender
+  class ETSAppender : public FormattingAppender
   {
   public:
     ETSAppender(const ETSAppender &) = delete;

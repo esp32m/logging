@@ -15,8 +15,31 @@ namespace esp32m
 {
 
     LogLevel Logging::_level = LogLevel::Debug;
+    LogMessageFormatter Logging::_formatter = nullptr;
     LogAppender *_appenders = nullptr;
     SemaphoreHandle_t _loggingLock = xSemaphoreCreateMutex();
+
+    LogMessage *LogMessage::alloc(LogLevel level, int64_t stamp, const char *name, const char *message)
+    {
+        size_t ml = strlen(message);
+        while (ml)
+        {
+            auto c = message[ml - 1];
+            if (c == '\n' || c == '\r')
+                ml--;
+            else
+                break;
+        }
+        size_t size = sizeof(LogMessage) + ml + 1;
+        void *pool = malloc(size);
+        return new (pool) LogMessage(size, level, stamp, name, message, ml);
+    }
+
+    LogMessage::LogMessage(size_t size, LogLevel level, int64_t stamp, const char *name, const char *message, size_t messageLen)
+        : _size(size), _stamp(stamp), _name(name), _level(level)
+    {
+        strncpy((char *)this->message(), message, messageLen)[messageLen] = '\0';
+    }
 
     Logger &Loggable::logger()
     {
@@ -43,17 +66,17 @@ namespace esp32m
         }
 
     protected:
-        bool append(const char *message)
+        bool append(const LogMessage *message)
         {
             if (!_handle)
                 return _appender.append(message);
             size_t size;
             bool ok = true;
-            char *item;
+            LogMessage *item;
             while (_appender.append(nullptr))
             {
                 xSemaphoreTake(_lock, portMAX_DELAY);
-                item = (char *)xRingbufferReceive(_handle, &size, 0);
+                item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                 xSemaphoreGive(_lock);
                 if (!item)
                     break;
@@ -65,12 +88,12 @@ namespace esp32m
                 for (;;)
                 {
                     xSemaphoreTake(_lock, portMAX_DELAY);
-                    if (xRingbufferSend(_handle, message, strlen(message) + 1, 0))
+                    if (xRingbufferSend(_handle, message, message->size(), 0))
                     {
                         xSemaphoreGive(_lock);
                         break;
                     }
-                    item = (char *)xRingbufferReceive(_handle, &size, 0);
+                    item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                     xSemaphoreGive(_lock);
                     if (!item)
                         break;
@@ -124,10 +147,10 @@ namespace esp32m
             xSemaphoreGive(_lock);
             vSemaphoreDelete(_lock);
         }
-        bool enqueue(const char *message)
+        bool enqueue(const LogMessage *message)
         {
             xSemaphoreTake(_lock, portMAX_DELAY);
-            auto result = xRingbufferSend(_buf, message, strlen(message) + 1, 10);
+            auto result = xRingbufferSend(_buf, message, message->size(), 10);
             xSemaphoreGive(_lock);
             return result;
         }
@@ -145,7 +168,7 @@ namespace esp32m
             {
                 esp_task_wdt_reset();
                 size_t size;
-                char *item = (char *)xRingbufferReceive(_buf, &size, 100);
+                LogMessage *item = (LogMessage *)xRingbufferReceive(_buf, &size, 100);
                 if (item)
                 {
                     LogAppender *appender = _appenders;
@@ -160,9 +183,71 @@ namespace esp32m
         }
     };
 
-    void Logger::log(LogLevel level, const char *msg)
+    int64_t timeOrUptime()
+    {
+        time_t now;
+        time(&now);
+        struct tm timeinfo;
+        localtime_r(&now, &timeinfo);
+        if (timeinfo.tm_year > (2016 - 1900))
+            return -(int64_t)now * 1000 + (millis() % 1000);
+        return esp_timer_get_time() / 1000;
+    }
+
+    char *format(const LogMessage *msg)
     {
         static const char *levels = "??EWIDV";
+        if (!msg)
+            return nullptr;
+        auto stamp = msg->stamp();
+        char *buf = nullptr;
+        auto level = msg->level();
+        auto name = msg->name();
+        char l = level >= 0 && level < 6 ? levels[level] : '?';
+        if (stamp < 0)
+        {
+            stamp = -stamp;
+            char strftime_buf[32];
+            time_t now = stamp / 1000;
+            struct tm timeinfo;
+            localtime_r(&now, &timeinfo);
+            strftime(strftime_buf, sizeof(strftime_buf), "%F %T", &timeinfo);
+            buf = (char *)malloc(strlen(strftime_buf) + 1 /*dot*/ + 4 /*millis*/ + 1 /*space*/ + 1 /*level*/ + 1 /*space*/ + strlen(name) + 2 /*spaces*/ + msg->message_size() + 1 /*zero*/);
+            sprintf(buf, "%s.%04d %c %s  %s", strftime_buf, (int)(stamp % 1000), l, name, msg->message());
+        }
+        else
+        {
+            int millis = stamp % 1000;
+            stamp /= 1000;
+            int seconds = stamp % 60;
+            stamp /= 60;
+            int minutes = stamp % 60;
+            stamp /= 60;
+            int hours = stamp % 24;
+            int days = stamp / 24;
+            buf = (char *)malloc(6 /*days*/ + 1 /*colon*/ + 2 /*hours*/ + 1 /*colon*/ + 2 /*minutes*/ + 1 /*colon*/ + 2 /*seconds*/ + 1 /*colon*/ + 4 /*millis*/ + 1 /*space*/ + 1 /*level*/ + 1 /*space*/ + strlen(name) + 2 /*spaces*/ + msg->message_size() + 1 /*zero*/);
+            sprintf(buf, "%d:%02d:%02d:%02d.%04d %c %s  %s", days, hours, minutes, seconds, millis, l, name, msg->message());
+        }
+        return buf;
+    }
+
+    FormattingAppender::FormattingAppender(LogMessageFormatter formatter)
+    {
+        _formatter = formatter == nullptr ? Logging::formatter() : formatter;
+    }
+
+    bool FormattingAppender::append(const LogMessage *message)
+    {
+        auto str = _formatter(message);
+        if (!str)
+            return true;
+        auto result = this->append(str);
+        free(str);
+        return result;
+    }
+
+    void Logger::log(LogLevel level, const char *msg)
+    {
         if (!msg)
             return;
         auto msglen = strlen(msg);
@@ -173,56 +258,35 @@ namespace esp32m
             effectiveLevel = Logging::level();
         if (level > effectiveLevel)
             return;
+        auto name = _loggable.logName();
+        LogMessage *message = LogMessage::alloc(level, timeOrUptime(), name, msg);
+        if (!message)
+            return;
         if (!_appenders)
         {
-            ets_printf("%s\n", msg);
-            return;
-        }
-        auto name = _loggable.logName();
-        char l = level >= 0 && level < 6 ? levels[level] : '?';
-        char *buf = nullptr;
-        struct tm timeinfo;
-
-        time_t now;
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        if (timeinfo.tm_year > (2016 - 1900))
-        {
-            char strftime_buf[32];
-            strftime(strftime_buf, sizeof(strftime_buf), "%F %T", &timeinfo);
-            buf = (char *)malloc(strlen(strftime_buf) + 1 /*dot*/ + 4 /*millis*/ + 1 /*space*/ + 1 /*level*/ + 1 /*space*/ + strlen(name) + 2 /*spaces*/ + msglen + 1 /*zero*/);
-            sprintf(buf, "%s.%04d %c %s  %s", strftime_buf, (int)(millis() % 1000), l, name, msg);
-        }
-        else
-        {
-            auto uptimeUs = esp_timer_get_time();
-            long m = uptimeUs / 1000;
-            int millis = m % 1000;
-            m /= 1000;
-            int seconds = m % 60;
-            m /= 60;
-            int minutes = m % 60;
-            m /= 60;
-            int hours = m % 24;
-            int days = m / 24;
-            buf = (char *)malloc(6 /*days*/ + 1 /*colon*/ + 2 /*hours*/ + 1 /*colon*/ + 2 /*minutes*/ + 1 /*colon*/ + 2 /*seconds*/ + 1 /*colon*/ + 4 /*millis*/ + 1 /*space*/ + 1 /*level*/ + 1 /*space*/ + strlen(name) + 2 /*spaces*/ + msglen + 1 /*zero*/);
-            sprintf(buf, "%d:%02d:%02d:%02d.%04d %c %s  %s", days, hours, minutes, seconds, millis, l, name, msg);
-        }
-        if (!buf)
-            return;
-        LogQueue *queue = logQueue;
-        if (queue)
-            queue->enqueue(buf);
-        else
-        {
-            LogAppender *appender = _appenders;
-            while (appender)
+            auto m = Logging::formatter()(message);
+            if (m)
             {
-                appender->append(buf);
-                appender = appender->_next;
+                ets_printf("%s\n", m);
+                free(m);
             }
         }
-        free(buf);
+        else
+        {
+            LogQueue *queue = logQueue;
+            if (queue)
+                queue->enqueue(message);
+            else
+            {
+                LogAppender *appender = _appenders;
+                while (appender)
+                {
+                    appender->append(message);
+                    appender = appender->_next;
+                }
+            }
+        }
+        free(message);
     }
 
     void Logger::logf(LogLevel level, const char *format, ...)
@@ -274,6 +338,11 @@ namespace esp32m
             appender->_next = a;
             a->_prev = appender;
         }
+    }
+
+    LogMessageFormatter Logging::formatter()
+    {
+        return _formatter == nullptr ? format : _formatter;
     }
 
     void Logging::removeAppender(LogAppender *a)
