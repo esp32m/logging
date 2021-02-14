@@ -67,16 +67,17 @@ namespace esp32m
             if (!msg)
                 return true;
             auto len = strlen(msg);
+            auto mptr = msg;
             while (len)
             {
-                auto result = sendto(_fd, msg, len, 0, (struct sockaddr *)&_addr, sizeof(_addr));
+                auto result = sendto(_fd, mptr, len, 0, (struct sockaddr *)&_addr, sizeof(_addr));
                 if (result < 0)
                 {
                     free(msg);
                     return false;
                 }
                 len -= result;
-                msg += result;
+                mptr += result;
             }
             free(msg);
             return sendto(_fd, &eol, sizeof(eol), 0, (struct sockaddr *)&_addr, sizeof(_addr)) == sizeof(eol);

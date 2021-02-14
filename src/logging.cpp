@@ -246,12 +246,22 @@ namespace esp32m
         return result;
     }
 
+    bool isEmpty(const char *s)
+    {
+        if (!s)
+            return true;
+        auto l = strlen(s);
+        if (!l)
+            return true;
+        for (int i = 0; i < l; i++)
+            if (!isspace(s[i]))
+                return false;
+        return true;
+    }
+
     void Logger::log(LogLevel level, const char *msg)
     {
-        if (!msg)
-            return;
-        auto msglen = strlen(msg);
-        if (!msglen)
+        if (isEmpty(msg))
             return;
         auto effectiveLevel = _level;
         if (effectiveLevel == LogLevel::Default)
@@ -390,32 +400,54 @@ namespace esp32m
         return loggable.logger();
     }
 
+    bool charToLevel(char c, LogLevel &l)
+    {
+        switch (c)
+        {
+        case 'I':
+            l = LogLevel::Info;
+            break;
+        case 'W':
+            l = LogLevel::Warning;
+            break;
+        case 'D':
+            l = LogLevel::Debug;
+            break;
+        case 'E':
+            l = LogLevel::Error;
+            break;
+        case 'V':
+            l = LogLevel::Verbose;
+            break;
+        default:
+            return false;
+        }
+        return true;
+    }
+
     LogLevel detectLevel(const char **mptr)
     {
         auto msg = *mptr;
         LogLevel l = LogLevel::None;
-        if (msg && strlen(msg) > 4 && msg[0] == '[' && msg[2] == ']')
-            switch (msg[1])
+        if (msg)
+        {
+            auto len = strlen(msg);
+            char lc = '\0';
+            int inc = 0;
+            if (len > 4 && msg[0] == '[' && msg[2] == ']')
             {
-            case 'I':
-                l = LogLevel::Info;
-                break;
-            case 'W':
-                l = LogLevel::Warning;
-                break;
-            case 'D':
-                l = LogLevel::Debug;
-                break;
-            case 'E':
-                l = LogLevel::Error;
-                break;
-            case 'V':
-                l = LogLevel::Verbose;
-                break;
+                lc = msg[1];
+                inc = 3;
             }
-        if (l)
-            (*mptr) += 3;
-        else
+            else if (len > 2 && msg[1] == ' ')
+            {
+                lc = msg[0];
+                inc = 2;
+            }
+            if (charToLevel(lc, l))
+                (*mptr) += inc;
+        }
+        if (!l)
             l = LogLevel::Debug;
         return l;
     }
@@ -440,15 +472,33 @@ namespace esp32m
     private:
         vprintf_like_t _prevLogger = nullptr;
         uint8_t _recursion = 0;
+        const char *_pendingName = nullptr;
+        LogLevel _pendingLevel = LogLevel::None;
         static int esp32hook(const char *str, va_list arg)
         {
             auto h = _esp32Hook;
             if (!h || h->_recursion)
                 return 0;
             h->_recursion++;
-            const char *mptr = str;
-            auto level = detectLevel(&mptr);
-            Logging::system().logf(level, mptr, arg);
+            if (h->_pendingName)
+            {
+                SimpleLoggable log(h->_pendingName);
+                log.logger().logf(h->_pendingLevel, str, arg);
+                h->_pendingLevel = LogLevel::None;
+                h->_pendingName = nullptr;
+            }
+            else if (!strcmp(str, "%c (%d) %s:"))
+            {
+                charToLevel((char)va_arg(arg, int), h->_pendingLevel);
+                va_arg(arg, long);
+                h->_pendingName = va_arg(arg, const char *);
+            }
+            else
+            {
+                const char *mptr = str;
+                auto level = detectLevel(&mptr);
+                Logging::system().logf(level, mptr, arg);
+            }
             h->_recursion--;
             return strlen(str);
         }
@@ -522,7 +572,7 @@ namespace esp32m
                     Logging::system().log(level, *mptr);
                     xSemaphoreTake(_lock, portMAX_DELAY);
                 }
-                if (c != '\n')
+                if (c != '\n' && c != '\r')
                     b[_serialBufPtr++] = c;
             }
             xSemaphoreGive(_lock);

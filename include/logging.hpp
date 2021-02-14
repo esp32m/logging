@@ -86,7 +86,7 @@ namespace esp32m
     /**
      * @return Size of this struct in bytes
      */
-    const size_t size() const { return _size; }
+    size_t size() const { return _size; }
     /**
      * @return The message itself
      */
@@ -94,7 +94,7 @@ namespace esp32m
     /**
      * @return Size of the message including null terminator
      */
-    const size_t message_size() const { return _size - sizeof(LogMessage); }
+    size_t message_size() const { return _size - sizeof(LogMessage); }
     /**
      * @return Name of the logger emitted the message
      */
@@ -102,12 +102,12 @@ namespace esp32m
     /**
      * @return Level of this message
      */
-    const LogLevel level() const { return (LogLevel)_level; }
+    LogLevel level() const { return (LogLevel)_level; }
     /**
      * @return Time stamp of the message. If positive, this is the number of millis since the last boot (means the system time was not set). 
      *         If negative, this is the current date/time in millis (NOT IN SECONDS!) since 1970-1-1 00:00
      */
-    const int64_t stamp() const { return _stamp; }
+    int64_t stamp() const { return _stamp; }
 
   private:
     size_t _size;
@@ -132,7 +132,7 @@ namespace esp32m
      * @brief Level of this logger.
      * Log messages with level greater than this one will be dropped
      */
-    const LogLevel level() const { return _level; }
+    LogLevel level() const { return _level; }
     /**
      * @brief Set level for this logger.
      * Log messages with level greater than this one will be dropped
@@ -264,7 +264,7 @@ namespace esp32m
     /**
      * @brief Global log level, used in conjunction with the specific @c Logger's level to calculate effective log level.
      */
-    static const LogLevel level() { return _level; }
+    static LogLevel level() { return _level; }
 
     /**
      * @brief Global formatter function that transforms @c LogMessage to a string
