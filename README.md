@@ -27,7 +27,7 @@ void setup()
 {
   SPIFFS.begin(true);
   // send log messages to file "mylog" on the SPIFFS
-  Logging::addAppender(new FSAppender(SPIFFS, "mylog"));
+  Logging::addAppender(new FSAppender(SPIFFS, "/mylog"));
   // send log messages to standard output (Serial)
   Logging::addAppender(&ETSAppender::instance());
   // send log messages to 192.168.1.1:1234 in the form of UDP packets
@@ -42,6 +42,14 @@ void loop() {
   ...
 }
 ```
+
+`log_x()` macros (where x is e,w,i,d or v) in the above example is defined in the Arduino and if you use the example as is,
+log messages will go through Arduino logging subsystem. It is possible to bypass Arduino and log directly to appenders simply by adding the 
+```
+build_flags =
+    -DLOGGING_REDEFINE_LOG_X
+```
+to the platformio.ini.
 
 ## Usage - advanced
 
