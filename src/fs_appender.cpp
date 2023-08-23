@@ -37,7 +37,11 @@ namespace esp32m
             _file = _fs.open(_name, "a");
         }
         if (_file)
+        {
             result = !message || _file.println(message) > 0;
+            if (result)
+                _file.flush();
+        }
         xSemaphoreGiveRecursive(_lock);
         return result;
     }
