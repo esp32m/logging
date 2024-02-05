@@ -156,10 +156,12 @@ namespace esp32m
                     xSemaphoreTake(_lock, portMAX_DELAY);
                     if (xRingbufferSend(_handle, message, message->size(), 0))
                     {
+                        // Ok, message added to buffer.
                         xSemaphoreGive(_lock);
                         break;
                     }
                     xSemaphoreGive(_lock);
+                    // KO ! : No space left in buffer...
                     
                     // Release _item_to_be_sent...
                     if(!_item_to_be_sent) {
@@ -168,17 +170,20 @@ namespace esp32m
                         xSemaphoreGive(_lock);
                     }
                     if (!_item_to_be_sent){
+                        // No item in buffer.
+                        // Warning : No space left in buffer... message to add to buffer is bigger than the full buffer size !
                         break;
                     }
 
-                    ret = _appender.append(_item_to_be_sent);
+                    ret = _appender.append(_item_to_be_sent); // Try to "send" item... last chance before loosing it due to buffer rotation!
                     xSemaphoreTake(_lock, portMAX_DELAY);
                     vRingbufferReturnItem(_handle, _item_to_be_sent);
                     xSemaphoreGive(_lock);
-                    _item_to_be_sent = nullptr; // Reset pointer, indicating item has been removed from Ring buffere. Here we remove item, even if it has not really been sent ! Make place in buffer...
+                    _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been removed from Ring buffere. Here we remove item, even if it has not really been sent ! Make place in buffer...
                 }
             }
             else {
+                // No message... "flush buffer" case, if useQueue autoFlushPeriod is used.
             }
 
             // Second : try to flush the buffered items (in the FIFO order of course)
@@ -188,23 +193,30 @@ namespace esp32m
             for(; max_loop_items_counter>0; max_loop_items_counter--)
             {
                 if(!_item_to_be_sent) {
+                    // Retreive item to be sent from the ring buffer
                     xSemaphoreTake(_lock, portMAX_DELAY);
                     _item_to_be_sent = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                     xSemaphoreGive(_lock);
                     if (!_item_to_be_sent){
+                        // No more item in buffer.
                         break;
                     }
                 }
                 else {
+                    // There is already an item waiting to be sent... (not sent last time)
                 }
                 ret = _appender.append(_item_to_be_sent);
                 if (!ret) {
+                    // Item not sent ! Keep it in memory for next try... Do not remove it from buffer !
+                    // Stop trying to send items for the moment... maybe appender is not ready.
                     break;
                 }
+                // Ok, item has been sent by appender.
+                // Remove it from the buffer.
                 xSemaphoreTake(_lock, portMAX_DELAY);
                 vRingbufferReturnItem(_handle, _item_to_be_sent);
                 xSemaphoreGive(_lock);
-                _item_to_be_sent = nullptr; // Reset pointer, indicating item has been sent.
+                _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been sent.
             }
 
             return true;
