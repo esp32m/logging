@@ -54,11 +54,12 @@ namespace esp32m
     class BufferedAppender : public LogAppender
     {
     public:
-        BufferedAppender(LogAppender &appender, size_t bufsize, bool autoRelease)
-            : _appender(appender), _autoRelease(autoRelease)
+        BufferedAppender(LogAppender &appender, size_t bufsize, bool autoRelease, uint32_t maxLoopItems)
+            : _appender(appender), _autoRelease(autoRelease), _max_loop_item_sent(maxLoopItems)
         {
             _lock = xSemaphoreCreateMutex();
             _handle = xRingbufferCreate(bufsize, RINGBUF_TYPE_NOSPLIT);
+            _item_to_be_sent = nullptr;
         }
         ~BufferedAppender()
         {
@@ -68,86 +69,12 @@ namespace esp32m
     protected:
         bool append(const LogMessage *message)
         {
-            if (!_handle)
+            if (!_handle) // No Ring Buffer = It has been released by autoRelease option
                 return _appender.append(message);
+
             size_t size;
-            bool ok = true;
-            LogMessage *item;
-            while (_appender.append(nullptr))
-            {
-                xSemaphoreTake(_lock, portMAX_DELAY);
-                item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
-                xSemaphoreGive(_lock);
-                if (!item)
-                    break;
-                ok &= _appender.append(item); // BE CAREFUL : If for any reason, append() is not ok, the item is lost... (even if the while loop test is ok, it can change until here...)
-                xSemaphoreTake(_lock, portMAX_DELAY);
-                vRingbufferReturnItem(_handle, item);
-                xSemaphoreGive(_lock);
-            }
-            if (!_appender.append(message))
-                for (;;)
-                {
-                    xSemaphoreTake(_lock, portMAX_DELAY);
-                    if (xRingbufferSend(_handle, message, message->size(), 0))
-                    {
-                        xSemaphoreGive(_lock);
-                        break;
-                    }
-                    item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
-                    xSemaphoreGive(_lock);
-                    if (!item)
-                        break;
-                    ok &= _appender.append(item);
-                    xSemaphoreTake(_lock, portMAX_DELAY);
-                    vRingbufferReturnItem(_handle, item);
-                    xSemaphoreGive(_lock);
-                }
-            if (ok && _autoRelease)
-                release();
-            return true;
-        }
-
-    private:
-        LogAppender &_appender;
-        bool _autoRelease;
-        RingbufHandle_t _handle;
-        SemaphoreHandle_t _lock;
-        void release()
-        {
-            if (!_handle)
-                return;
-            xSemaphoreTake(_lock, portMAX_DELAY);
-            vRingbufferDelete(_handle);
-            xSemaphoreGive(_lock);
-            _handle = nullptr;
-            vSemaphoreDelete(_lock);
-        }
-    };
-
-    class SafeBufferedAppender : public LogAppender
-    {
-    public:
-        SafeBufferedAppender(LogAppender &appender, size_t bufsize, uint32_t maxLoopItems)
-            : _appender(appender), _max_loop_item_sent(maxLoopItems)
-        {
-            _lock = xSemaphoreCreateMutex();
-            _handle = xRingbufferCreate(bufsize, RINGBUF_TYPE_NOSPLIT);
-            _item_to_be_sent = nullptr;
-        }
-        ~SafeBufferedAppender()
-        {
-            release();
-        }
-
-    protected:
-        bool append(const LogMessage *message)
-        {
-            if (!_handle){
-                return _appender.append(message);
-            }
-            size_t size;
-            bool ret = false;
+            bool ok = false;
+            bool append_result = false;
             
             // First always add message in ring buffer... always...
             if (message) {
@@ -175,7 +102,7 @@ namespace esp32m
                         break;
                     }
 
-                    ret = _appender.append(_item_to_be_sent); // Try to "send" item... last chance before loosing it due to buffer rotation!
+                    append_result = _appender.append(_item_to_be_sent); // Try to "send" item... last chance before loosing it due to buffer rotation!
                     xSemaphoreTake(_lock, portMAX_DELAY);
                     vRingbufferReturnItem(_handle, _item_to_be_sent);
                     xSemaphoreGive(_lock);
@@ -198,15 +125,16 @@ namespace esp32m
                     _item_to_be_sent = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                     xSemaphoreGive(_lock);
                     if (!_item_to_be_sent){
-                        // No more item in buffer.
+                        // No more item in buffer. All items sent.
+                        ok = true;
                         break;
                     }
                 }
                 else {
                     // There is already an item waiting to be sent... (not sent last time)
                 }
-                ret = _appender.append(_item_to_be_sent);
-                if (!ret) {
+                append_result = _appender.append(_item_to_be_sent);
+                if (!append_result) {
                     // Item not sent ! Keep it in memory for next try... Do not remove it from buffer !
                     // Stop trying to send items for the moment... maybe appender is not ready.
                     break;
@@ -218,12 +146,14 @@ namespace esp32m
                 xSemaphoreGive(_lock);
                 _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been sent.
             }
-
+            if (ok && _autoRelease)
+                release();
             return true;
         }
-
+    
     private:
         LogAppender &_appender;
+        bool _autoRelease;
         RingbufHandle_t _handle;
         SemaphoreHandle_t _lock;
         LogMessage *_item_to_be_sent;
@@ -456,16 +386,10 @@ namespace esp32m
             free(temp);
     }
 
-    void Logging::addBufferedAppender(LogAppender *a, int bufsize, bool autoRelease)
+    void Logging::addBufferedAppender(LogAppender *a, int bufsize, bool autoRelease, uint32_t maxLoopItems)
     {
         if (a)
-            addAppender(new BufferedAppender(*a, bufsize, autoRelease));
-    }
-
-    void Logging::addSafeBufferedAppender(LogAppender *a, int bufsize, uint16_t maxLoopItems)
-    {
-        if (a)
-            addAppender(new SafeBufferedAppender(*a, bufsize, maxLoopItems));
+            addAppender(new BufferedAppender(*a, bufsize, autoRelease, maxLoopItems));
     }
 
     void Logging::addAppender(LogAppender *a)
