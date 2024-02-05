@@ -230,7 +230,7 @@ namespace esp32m
   {
   public:
     /** 
-     * @brief This is the default logger to be used when @c Loggable instacne is not available
+     * @brief This is the default logger to be used when @c Loggable instance is not available
      */
     static Logger &system();
     
