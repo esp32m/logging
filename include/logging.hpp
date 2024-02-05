@@ -184,7 +184,7 @@ namespace esp32m
      *       In this case, if the appender knows for sure that it will not be able to record messages at this time 
      *       (for example, no connection to the server, filesystem not mounted etc.), it must return @c false. 
      *       Otherwise, if the appender believes that it should be able to record the messages, it should return @c true
-     *       This behavior is exploited by buffering algorithms explained in the @c Logging::addBufferedAppender(...)
+     *       This behavior is exploited by buffering algorithms explained in the @c Logging::addBufferedAppender(...) or @c Logging::addSafeBufferedAppender(...)
      * @note This method SHOULD be thread-safe and take as little time as possible to record the message, unless message queue is installed, see @c Logging::useQueue(...)
      * @param message Message to be recorded, may be @c nullptr
      * @return @c true on success, @c false on failure
@@ -197,6 +197,7 @@ namespace esp32m
     friend class Logger;
     friend class Logging;
     friend class BufferedAppender;
+    friend class SafeBufferedAppender;
     friend class LogQueue;
   };
 
@@ -254,6 +255,19 @@ namespace esp32m
      */
     static void addBufferedAppender(LogAppender *a, int bufsiza = 1024, bool autoRelease = true);
     
+    /**
+     * @brief Same idea as @c Logging::addBufferedAppender, adds appender that may need some time to initialize before it can record messages (for example, connect to the network, mount filesystem etc.) 
+     * The main difference with @c Logging::addBuferedAppender(), is that this "safe" appender will always try to re-sent the last item that has not yet been sent.
+     * This is not the behavior of the standard @c BufferAppender() : it will drop the item if it is not really sent (when append() return false)
+     * So "safe" appender keep in memory the item to be sent, and update to a new one only it has been realy sent, or if the buffer is full.
+     * This is the only case you can lost item : if buffer is full and we need to make some space to put new item in ring buffer.
+     * No need for an @c autoRelease option. Buffer is always keep.
+     * @param a Appender to be added
+     * @param bufsize Size of the circular buffer that keeps the most recent messages. If buffer overflows, it erases older messages until there's a space to record the most recent message.
+     * @param maxLoopItems When @c Logging::useQueue() is used: amount of buffered items to be sent per Queue "flush" period. In order to avoid blocking the Queue task too much (and raised Watchdog interrupt), in case of long time appender (network, file...)
+     */
+    static void addSafeBufferedAppender(LogAppender *a, int bufsiza = 1024, uint16_t maxLoopItems = 0);
+
     /**
      * @brief Removes appender from the logging subsystem.
      * Log messages will no longer be sent to this appender
