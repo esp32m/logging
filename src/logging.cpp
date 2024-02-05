@@ -80,7 +80,8 @@ namespace esp32m
                 xSemaphoreGive(_lock);
                 if (!item)
                     break;
-                ok &= _appender.append(item);
+                ok &= _appender.append(item); // BE CAREFUL : If for any reason, append() is not ok, the item is lost... (even if the while loop test is ok, it can change until here...)
+                xSemaphoreTake(_lock, portMAX_DELAY);
                 vRingbufferReturnItem(_handle, item);
                 xSemaphoreGive(_lock);
             }
