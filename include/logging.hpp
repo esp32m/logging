@@ -290,8 +290,12 @@ namespace esp32m
      * To work around these issues, a queue may be installed as an intemediate layer between the loggers and appenders. The messages are then collected in the queue, 
      * and processed sequentially in the dedicated thread, ensuring thread safety and no delay side-effects.
      * @param size Size of the queue. If set to 0, the queue will be removed.
+     * @param autoFlushPeriod Period in ms, to try to flush the BufferedAppender automatically.
+     *                        @c 0 = No flush period, normal behavior = Will try to flush on new entry.
+     *                        @c number_of_ms = Every period, the queue will loop on all appenders, and call @c append(nullptr), in order to force BufferedAppender to flush their buffer.
+     *                        @warning  Be careful, with standard @c Logging::BufferedAppender() it could result in loosing item, if appender is not ready, the item will be lost...
      */
-    static void useQueue(int size = 1024);
+    static void useQueue(int size = 1024, uint32_t autoFlushPeriod = 0);
 
     /**
      * @brief Hooks ESP32-specific logging mechanism, see @c esp_log_set_vprintf() in the esp-idf docs for details
