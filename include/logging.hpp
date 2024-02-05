@@ -230,7 +230,7 @@ namespace esp32m
   {
   public:
     /** 
-     * @brief This is the default logger to be used when @c Loggable instacne is not available
+     * @brief This is the default logger to be used when @c Loggable instance is not available
      */
     static Logger &system();
     
@@ -251,9 +251,12 @@ namespace esp32m
      * @param autoRelease If @c true, the buffer will be released automatically once the appender is ready to accept messages. 
      *                    May be set to @c false if it is known that the appender may temporarily loose the ability to record messages even after succesful initialization.
      *                    In this case, the buffer memory will never be released.
+     * @param maxLoopItems When @c Logging::useQueue() is used: amount of buffered items to be sent per Queue "flush" period. In order to avoid blocking the Queue task too much (and raised Watchdog interrupt), in case of long time appender (network, file...)
+     *                         This parameter is use only if safeItem is used too !
+     *
      */
-    static void addBufferedAppender(LogAppender *a, int bufsiza = 1024, bool autoRelease = true);
-    
+    static void addBufferedAppender(LogAppender *a, int bufsiza = 1024, bool autoRelease = true, uint32_t maxLoopItems = 0);
+
     /**
      * @brief Removes appender from the logging subsystem.
      * Log messages will no longer be sent to this appender
@@ -290,8 +293,12 @@ namespace esp32m
      * To work around these issues, a queue may be installed as an intemediate layer between the loggers and appenders. The messages are then collected in the queue, 
      * and processed sequentially in the dedicated thread, ensuring thread safety and no delay side-effects.
      * @param size Size of the queue. If set to 0, the queue will be removed.
+     * @param autoFlushPeriod Period in ms, to try to flush the BufferedAppender automatically.
+     *                        @c 0 = No flush period, normal behavior = Will try to flush on new entry.
+     *                        @c number_of_ms = Every period, the queue will loop on all appenders, and call @c append(nullptr), in order to force BufferedAppender to flush their buffer.
+     *                        @warning  Be careful, with standard @c Logging::BufferedAppender() it could result in loosing item, if appender is not ready, the item will be lost...
      */
-    static void useQueue(int size = 1024);
+    static void useQueue(int size = 1024, uint32_t autoFlushPeriod = 0);
 
     /**
      * @brief Hooks ESP32-specific logging mechanism, see @c esp_log_set_vprintf() in the esp-idf docs for details

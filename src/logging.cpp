@@ -54,11 +54,12 @@ namespace esp32m
     class BufferedAppender : public LogAppender
     {
     public:
-        BufferedAppender(LogAppender &appender, size_t bufsize, bool autoRelease)
-            : _appender(appender), _autoRelease(autoRelease)
+        BufferedAppender(LogAppender &appender, size_t bufsize, bool autoRelease, uint32_t maxLoopItems)
+            : _appender(appender), _autoRelease(autoRelease), _max_loop_item_sent(maxLoopItems)
         {
             _lock = xSemaphoreCreateMutex();
             _handle = xRingbufferCreate(bufsize, RINGBUF_TYPE_NOSPLIT);
+            _item_to_be_sent = nullptr;
         }
         ~BufferedAppender()
         {
@@ -68,50 +69,95 @@ namespace esp32m
     protected:
         bool append(const LogMessage *message)
         {
-            if (!_handle)
+            if (!_handle) // No Ring Buffer = It has been released by autoRelease option
                 return _appender.append(message);
+
             size_t size;
-            bool ok = true;
-            LogMessage *item;
-            while (_appender.append(nullptr))
-            {
-                xSemaphoreTake(_lock, portMAX_DELAY);
-                item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
-                xSemaphoreGive(_lock);
-                if (!item)
-                    break;
-                ok &= _appender.append(item);
-                vRingbufferReturnItem(_handle, item);
-                xSemaphoreGive(_lock);
-            }
-            if (!_appender.append(message))
-                for (;;)
+            bool ok = false;
+            bool append_result = false;
+            
+            // First always add message in ring buffer... always...
+            if (message) {
+                for (;;) // BE CAREFUL... If this loop takes too much time and useQueue is in use : the WDG of Queue task could never be called...
                 {
                     xSemaphoreTake(_lock, portMAX_DELAY);
                     if (xRingbufferSend(_handle, message, message->size(), 0))
                     {
+                        // Ok, message added to buffer.
                         xSemaphoreGive(_lock);
                         break;
                     }
-                    item = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                     xSemaphoreGive(_lock);
-                    if (!item)
+                    // KO ! : No space left in buffer...
+                    
+                    if(!_item_to_be_sent) {
+                        // Retreive item to be sent from the ring buffer : the older one.
+                        xSemaphoreTake(_lock, portMAX_DELAY);
+                        _item_to_be_sent = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
+                        xSemaphoreGive(_lock);
+                    }
+                    if (!_item_to_be_sent){
+                        // No item in buffer.
+                        // Warning : No space left in buffer... message to add to buffer is bigger than the full buffer size !
                         break;
-                    ok &= _appender.append(item);
+                    }
+
+                    append_result = _appender.append(_item_to_be_sent); // Try to "send" item... last chance before loosing it due to buffer rotation!
                     xSemaphoreTake(_lock, portMAX_DELAY);
-                    vRingbufferReturnItem(_handle, item);
+                    vRingbufferReturnItem(_handle, _item_to_be_sent); // Here we remove item, even if it has not really been sent ! Free space in buffer...
                     xSemaphoreGive(_lock);
+                    _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been removed from Ring buffer
                 }
+            }
+            else {
+                // No message... "flush buffer" case, if useQueue autoFlushPeriod is used.
+            }
+
+            // Second : try to flush the buffered items (in the FIFO order of course)
+            // If not possible, stop and keep the last not sent item in memory (_item_to_be_sent)
+            // Limit the loop to _max_loop_item_sent to avoid too long loop in case of useQueue is in use (avoid WDG interrupt/reset)
+            uint32_t max_loop_items_counter = _max_loop_item_sent ? _max_loop_item_sent : 0xFFFFFFFF;
+            for(; max_loop_items_counter>0; max_loop_items_counter--)
+            {
+                if(!_item_to_be_sent) {
+                    // Retreive item to be sent from the ring buffer
+                    xSemaphoreTake(_lock, portMAX_DELAY);
+                    _item_to_be_sent = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
+                    xSemaphoreGive(_lock);
+                    if (!_item_to_be_sent){
+                        // No more item in buffer. All items sent.
+                        ok = true;
+                        break;
+                    }
+                }
+                else {
+                    // There is already an item waiting to be sent... (not sent last time)
+                }
+                append_result = _appender.append(_item_to_be_sent);
+                if (!append_result) {
+                    // Item not sent ! Keep it in memory for next try... Do not remove it from buffer !
+                    // Stop trying to send items for the moment... maybe appender is not ready.
+                    break;
+                }
+                // Ok, item has been sent by appender.
+                // Remove it from the buffer.
+                xSemaphoreTake(_lock, portMAX_DELAY);
+                vRingbufferReturnItem(_handle, _item_to_be_sent);
+                xSemaphoreGive(_lock);
+                _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been sent.
+            }
             if (ok && _autoRelease)
                 release();
             return true;
         }
-
+    
     private:
         LogAppender &_appender;
         bool _autoRelease;
         RingbufHandle_t _handle;
         SemaphoreHandle_t _lock;
+        LogMessage *_item_to_be_sent;
+        uint32_t _max_loop_item_sent;
         void release()
         {
             if (!_handle)
@@ -130,8 +176,8 @@ namespace esp32m
     class LogQueue
     {
     public:
-        LogQueue(size_t bufsize)
-            : _bufsize(bufsize)
+        LogQueue(size_t bufsize, uint32_t autoFlushPeriod)
+            : _bufsize(bufsize), _flush_period_ms(autoFlushPeriod)
         {
             _lock = xSemaphoreCreateMutex();
             _buf = xRingbufferCreate(bufsize, RINGBUF_TYPE_NOSPLIT);
@@ -156,6 +202,7 @@ namespace esp32m
         }
 
     private:
+        uint32_t _flush_period_ms;
         size_t _bufsize;
         SemaphoreHandle_t _lock;
         RingbufHandle_t _buf;
@@ -163,12 +210,13 @@ namespace esp32m
         friend class Logging;
         void run()
         {
+            const TickType_t ticks_timeout = _flush_period_ms ? (TickType_t)(_flush_period_ms/portTICK_PERIOD_MS) : 100;
             esp_task_wdt_add(nullptr);
             for (;;)
             {
                 esp_task_wdt_reset();
                 size_t size;
-                LogMessage *item = (LogMessage *)xRingbufferReceive(_buf, &size, 100);
+                LogMessage *item = (LogMessage *)xRingbufferReceive(_buf, &size, ticks_timeout);
                 if (item)
                 {
                     LogAppender *appender = _appenders;
@@ -179,6 +227,16 @@ namespace esp32m
                     }
                     vRingbufferReturnItem(_buf, item);
                 }
+                else if(_flush_period_ms) {
+                    LogAppender *appender = _appenders;
+                    while (appender)
+                    {
+                        //TODO : Loop only on "Buffered" Appenders ?
+                        appender->append(nullptr); // nullptr ! Just to "flush" BufferedAppenders
+                        appender = appender->_next;
+                    }
+                }
+                else {}
             }
         }
     };
@@ -328,10 +386,10 @@ namespace esp32m
             free(temp);
     }
 
-    void Logging::addBufferedAppender(LogAppender *a, int bufsize, bool autoRelease)
+    void Logging::addBufferedAppender(LogAppender *a, int bufsize, bool autoRelease, uint32_t maxLoopItems)
     {
         if (a)
-            addAppender(new BufferedAppender(*a, bufsize, autoRelease));
+            addAppender(new BufferedAppender(*a, bufsize, autoRelease, maxLoopItems));
     }
 
     void Logging::addAppender(LogAppender *a)
@@ -377,7 +435,7 @@ namespace esp32m
             }
     }
 
-    void Logging::useQueue(int size)
+    void Logging::useQueue(int size, uint32_t autoFlushPeriod)
     {
         auto q = logQueue;
         if (size)
@@ -388,7 +446,7 @@ namespace esp32m
                     return;
                 delete q;
             }
-            new LogQueue(size);
+            new LogQueue(size, autoFlushPeriod);
         }
         else if (q)
             delete q;
