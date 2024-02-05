@@ -90,8 +90,8 @@ namespace esp32m
                     xSemaphoreGive(_lock);
                     // KO ! : No space left in buffer...
                     
-                    // Release _item_to_be_sent...
                     if(!_item_to_be_sent) {
+                        // Retreive item to be sent from the ring buffer : the older one.
                         xSemaphoreTake(_lock, portMAX_DELAY);
                         _item_to_be_sent = (LogMessage *)xRingbufferReceive(_handle, &size, 0);
                         xSemaphoreGive(_lock);
@@ -104,9 +104,9 @@ namespace esp32m
 
                     append_result = _appender.append(_item_to_be_sent); // Try to "send" item... last chance before loosing it due to buffer rotation!
                     xSemaphoreTake(_lock, portMAX_DELAY);
-                    vRingbufferReturnItem(_handle, _item_to_be_sent);
+                    vRingbufferReturnItem(_handle, _item_to_be_sent); // Here we remove item, even if it has not really been sent ! Free space in buffer...
                     xSemaphoreGive(_lock);
-                    _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been removed from Ring buffere. Here we remove item, even if it has not really been sent ! Make place in buffer...
+                    _item_to_be_sent = nullptr; // Reset pointer, indicating the item has been removed from Ring buffer
                 }
             }
             else {
