@@ -21,14 +21,12 @@ namespace esp32m
                 a = _name;
                 if (i)
                 {
-                    a.concat('.');
-                    a.concat(i);
+                    a = newFilename(i);
                 }
                 if (_fs.exists(a))
                 {
-                    b = _name;
-                    b.concat('.');
-                    b.concat(i + 1);
+                    b = newFilename(i+1);
+
                     if (_fs.exists(b))
                         _fs.remove(b);
                     _fs.rename(a, b);
@@ -44,6 +42,28 @@ namespace esp32m
         }
         xSemaphoreGiveRecursive(_lock);
         return result;
+    }
+
+    String FSAppender::newFilename(uint8_t i) {
+        auto rn = strlen(_name) + 1 + 3 + 1; // Reserve space for 3 digits file index : Max 512 (uint8_t) files on disk
+        String newName;
+        newName.reserve(rn);
+        newName = _name;
+
+        int extIdx = newName.lastIndexOf('.');
+        if(extIdx >= 0) {
+            String ext = newName.substring(extIdx);
+            newName = newName.substring(0, extIdx); // Name without file extension
+            newName.concat('.');
+            newName.concat(i);
+            newName.concat(ext);
+        }
+        else {
+            newName.concat('.');
+            newName.concat(i);
+        }
+
+        return newName;
     }
 
 } // namespace esp32m
