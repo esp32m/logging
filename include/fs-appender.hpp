@@ -27,6 +27,8 @@ namespace esp32m
         uint8_t _maxFiles;
         uint32_t _maxFileSizeBytes;
         SemaphoreHandle_t _lock;
+
+        String newFilename(uint8_t idx); // Max 512 files on disk
     };
 
 } // namespace esp32m
