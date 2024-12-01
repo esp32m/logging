@@ -15,6 +15,7 @@ namespace esp32m
     public:
         FSAppender(FS &fs, const char *name, uint8_t maxFiles = 1, uint32_t maxFileSizeBytes=8192) : _fs(fs), _name(name), _maxFiles(maxFiles), _maxFileSizeBytes(maxFileSizeBytes), _lock(xSemaphoreCreateRecursiveMutex()) {}
         FSAppender(const FSAppender &) = delete;
+        virtual bool close();
 
     protected:
         virtual bool append(const char *message);
