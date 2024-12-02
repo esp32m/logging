@@ -66,4 +66,17 @@ namespace esp32m
         return newName;
     }
 
+    // Flushes and closes the file.
+    // Returns true if a file was closed.
+    // Returns false otherwise.
+    bool FSAppender::close(){
+        if (_file){
+            xSemaphoreTakeRecursive(_lock, portMAX_DELAY);
+            _file.close();
+            xSemaphoreGiveRecursive(_lock);
+            return true;
+        }
+        return false;
+    }
+
 } // namespace esp32m
