@@ -1,5 +1,5 @@
 #include <string.h>
-
+#include "platform-uart.hpp"
 #include "ets-appender.hpp"
 
 namespace esp32m {
@@ -16,8 +16,8 @@ namespace esp32m {
         {
             auto l = strlen(message);
             for (auto i = 0; i < l; i++)
-                ets_write_char_uart(message[i]);
-            ets_write_char_uart('\n');
+                platform_write_char_uart(message[i]);
+            platform_write_char_uart('\n');
         }
 
         return true;
