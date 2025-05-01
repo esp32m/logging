@@ -11,6 +11,7 @@
 #include <esp32-hal.h>
 
 #include "logging.hpp"
+#include "platform-uart.hpp"
 
 namespace esp32m
 {
@@ -596,7 +597,7 @@ namespace esp32m
         }
         ~SerialHook()
         {
-            ets_install_putc1(ets_write_char_uart);
+            ets_install_putc1(platform_write_char_uart);
             xSemaphoreTake(_lock, portMAX_DELAY);
             free(_serialBuf);
             _serialBufLen = 0;
