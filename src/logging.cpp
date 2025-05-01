@@ -1,6 +1,7 @@
 #include <malloc.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/ringbuf.h>
 #include <freertos/semphr.h>
